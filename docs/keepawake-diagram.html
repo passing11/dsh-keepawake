@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DSH 保活开关 · 运行图解</title>
+<style>
+  :root{
+    --ink:#0f172a; --muted:#64748b; --line:#e2e8f0;
+    --slate:#64748b; --blue:#2563eb; --green:#059669; --amber:#d97706; --violet:#7c3aed; --red:#b91c1c;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:32px 28px 56px;
+    background:#f8fafc; color:var(--ink);
+    font-family:"Microsoft YaHei","PingFang SC","Segoe UI",system-ui,sans-serif;
+    font-size:14px; line-height:1.7;
+  }
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 4px;letter-spacing:.5px}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 22px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:0 0 22px;box-shadow:0 1px 2px rgba(15,23,42,.04)}
+  h2{font-size:15px;margin:0 0 12px;color:var(--ink)}
+  h2 span{color:var(--muted);font-weight:400;font-size:12px;margin-left:8px}
+  svg{display:block;width:100%;height:auto}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th,td{border-bottom:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;background:#f8fafc}
+  tr:last-child td{border-bottom:none}
+  code{font-family:Consolas,"Cascadia Mono",monospace;font-size:12px;background:#f1f5f9;padding:1px 5px;border-radius:4px}
+  .legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px 22px}
+  .lg{display:flex;gap:9px;align-items:flex-start;font-size:13px}
+  .dot{width:12px;height:12px;border-radius:3px;flex:0 0 auto;margin-top:6px}
+  .note{border-left:3px solid var(--amber);background:#fffbeb;padding:10px 14px;border-radius:0 8px 8px 0;font-size:13px;color:#78350f;margin:14px 0 0}
+  .foot{color:var(--muted);font-size:12px;text-align:center;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>DSH 保活开关 · 运行图解</h1>
+  <p class="sub">一句话：一个后台小进程每隔 10 秒问一次「DSH 现在忙不忙」，忙就向 Windows 申请「别睡」，闲满 5 分钟就撤销申请。</p>
+
+  <div class="card">
+    <h2>主流程 <span>从左到右是控制流，绿色=看门狗，橙色=Windows 内核</span></h2>
+
+<svg viewBox="0 0 1080 1250" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <!-- ① -->
+  <rect x="340" y="70" width="400" height="64" rx="10" fill="#f8fafc" stroke="#64748b" stroke-width="1.8"/>
+  <text x="540" y="97" text-anchor="middle" font-size="15" font-weight="700" fill="#0f172a">① 你双击桌面快捷方式「DSH 保活开关」</text>
+  <text x="540" y="119" text-anchor="middle" font-size="10.5" fill="#475569" font-family="Consolas,monospace">powershell.exe -File keepawake-toggle.ps1</text>
+  <line x1="540" y1="134" x2="540" y2="166" stroke="#475569" stroke-width="2" marker-end="url(#ar)"/>
+
+  <!-- ② -->
+  <rect x="340" y="170" width="400" height="58" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.8"/>
+  <text x="540" y="196" text-anchor="middle" font-size="15" font-weight="700" fill="#1e3a8a">② 看门狗现在在跑吗？</text>
+  <text x="540" y="216" text-anchor="middle" font-size="11" fill="#334155">Get-Watchdogs：读 pid 文件 + 扫进程表</text>
+
+  <!-- 关闭分支 -->
+  <path d="M740,199 L915,199 L915,256" fill="none" stroke="#b91c1c" stroke-width="2" marker-end="url(#ar)"/>
+  <text x="828" y="190" text-anchor="middle" font-size="11" fill="#b91c1c">已在跑 → 点一下就是「关」</text>
+  <rect x="790" y="260" width="250" height="104" rx="10" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.8"/>
+  <text x="915" y="288" text-anchor="middle" font-size="14" font-weight="700" fill="#7f1d1d">关闭看门狗</text>
+  <text x="915" y="311" text-anchor="middle" font-size="11" fill="#7f1d1d">Stop-Process 杀掉那个进程</text>
+  <text x="915" y="331" text-anchor="middle" font-size="11" fill="#7f1d1d">删掉 pid 文件</text>
+  <text x="915" y="351" text-anchor="middle" font-size="11" fill="#7f1d1d">锁立刻释放，恢复正常休眠</text>
+
+  <!-- 开启分支 -->
+  <line x1="540" y1="228" x2="540" y2="258" stroke="#475569" stroke-width="2" marker-end="url(#ar)"/>
+  <text x="552" y="247" font-size="11" fill="#166534">没在跑 → 点一下就是「开」</text>
+
+  <!-- ③ -->
+  <rect x="340" y="262" width="400" height="80" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.8"/>
+  <text x="540" y="288" text-anchor="middle" font-size="15" font-weight="700" fill="#1e3a8a">③ 后台起一个独立的看门狗进程</text>
+  <text x="540" y="310" text-anchor="middle" font-size="10.5" fill="#334155" font-family="Consolas,monospace">Start-Process powershell -File dsh-keepawake-watch.ps1</text>
+  <text x="540" y="330" text-anchor="middle" font-size="10.5" fill="#334155" font-family="Consolas,monospace">-IdleMinutes 5 · 无窗口 · PID 记入 %TEMP%\dsh-keepawake.pid</text>
+  <line x1="540" y1="342" x2="540" y2="376" stroke="#475569" stroke-width="2" marker-end="url(#ar)"/>
+
+  <!-- ④ -->
+  <rect x="340" y="380" width="400" height="64" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="1.8"/>
+  <text x="540" y="407" text-anchor="middle" font-size="15" font-weight="700" fill="#064e3b">④ 主循环：每 10 秒醒一次</text>
+  <text x="540" y="429" text-anchor="middle" font-size="11" fill="#334155">采两个信号 → 判断忙闲 → 持锁 / 释放 → Start-Sleep 10</text>
+  <path d="M340,424 L258,424 L258,396 L336,396" fill="none" stroke="#059669" stroke-width="1.8" marker-end="url(#ar)"/>
+  <line x1="540" y1="444" x2="540" y2="482" stroke="#475569" stroke-width="2" marker-end="url(#ar)"/>
+
+  <!-- 信号 A / B -->
+  <rect x="340" y="486" width="190" height="96" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="1.8"/>
+  <text x="435" y="512" text-anchor="middle" font-size="14" font-weight="700" fill="#064e3b">信号 A</text>
+  <text x="435" y="534" text-anchor="middle" font-size="12" fill="#0f172a">会话文件活跃</text>
+  <text x="435" y="553" text-anchor="middle" font-size="10.5" fill="#475569" font-family="Consolas,monospace">session.v4.jsonl.*</text>
+  <text x="435" y="571" text-anchor="middle" font-size="11" fill="#334155">最近 5 分钟被写过</text>
+
+  <rect x="550" y="486" width="190" height="96" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="1.8"/>
+  <text x="645" y="512" text-anchor="middle" font-size="14" font-weight="700" fill="#064e3b">信号 B</text>
+  <text x="645" y="534" text-anchor="middle" font-size="12" fill="#0f172a">正在跟模型通信</text>
+  <text x="645" y="553" text-anchor="middle" font-size="10.5" fill="#475569" font-family="Consolas,monospace">DSH 进程 ESTABLISHED</text>
+  <text x="645" y="571" text-anchor="middle" font-size="11" fill="#334155">远程 443 · 非内网</text>
+
+  <path d="M435,582 L435,616 L520,616" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#ar)"/>
+  <path d="M645,582 L645,616 L560,616" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#ar)"/>
+  <circle cx="540" cy="616" r="17" fill="#fff" stroke="#475569" stroke-width="1.8"/>
+  <text x="540" y="621" text-anchor="middle" font-size="13" font-weight="700" fill="#334155">或</text>
+  <line x1="540" y1="633" x2="540" y2="660" stroke="#475569" stroke-width="2" marker-end="url(#ar)"/>
+
+  <!-- ⑤ -->
+  <rect x="340" y="664" width="400" height="56" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="1.8"/>
+  <text x="540" y="690" text-anchor="middle" font-size="15" font-weight="700" fill="#064e3b">⑤ 任一信号成立 = 现在「忙」</text>
+  <text x="540" y="711" text-anchor="middle" font-size="11" fill="#334155">两个都消失后，才开始累计静默时长</text>
+
+  <line x1="460" y1="720" x2="460" y2="750" stroke="#059669" stroke-width="2" marker-end="url(#ar)"/>
+  <text x="470" y="741" font-size="11" fill="#166534">忙</text>
+  <path d="M620,720 L860,720 L860,1064 L744,1064" fill="none" stroke="#7c3aed" stroke-width="2" marker-end="url(#ar)"/>
+  <text x="634" y="713" font-size="11" fill="#6d28d9">闲</text>
+
+  <!-- ⑥ -->
+  <rect x="340" y="752" width="400" height="86" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="1.8"/>
+  <text x="540" y="780" text-anchor="middle" font-size="15" font-weight="700" fill="#064e3b">⑥ 忙 且 没在持锁 → 上锁</text>
+  <text x="540" y="803" text-anchor="middle" font-size="10.5" fill="#334155" font-family="Consolas,monospace">SetThreadExecutionState(0x80000003)</text>
+  <text x="540" y="823" text-anchor="middle" font-size="11" fill="#334155">= ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED</text>
+  <line x1="540" y1="838" x2="540" y2="866" stroke="#475569" stroke-width="2" marker-end="url(#ar)"/>
+
+  <!-- ⑦ 内核 -->
+  <rect x="280" y="868" width="520" height="120" rx="10" fill="#fffbeb" stroke="#d97706" stroke-width="1.8"/>
+  <text x="540" y="896" text-anchor="middle" font-size="15" font-weight="700" fill="#78350f">⑦ Windows 内核：这期间不许睡</text>
+  <text x="540" y="920" text-anchor="middle" font-size="12" fill="#451a03">电源管理器认为系统有活动 → 不进入待机，也不休眠</text>
+  <text x="540" y="944" text-anchor="middle" font-size="12" fill="#451a03">同时也申请了 ES_DISPLAY_REQUIRED（屏幕别关）</text>
+  <text x="540" y="966" text-anchor="middle" font-size="12" fill="#451a03">→ 本机只有现代待机(S0)，屏幕一关就等于进待机</text>
+  <line x1="540" y1="988" x2="540" y2="1024" stroke="#475569" stroke-width="2" marker-end="url(#ar)"/>
+
+  <!-- ⑧ -->
+  <rect x="340" y="1026" width="400" height="76" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="1.8"/>
+  <text x="540" y="1052" text-anchor="middle" font-size="15" font-weight="700" fill="#064e3b">⑧ 不忙 且 已持锁 且 静默满 5 分钟</text>
+  <text x="540" y="1075" text-anchor="middle" font-size="10.5" fill="#334155" font-family="Consolas,monospace">SetThreadExecutionState(0x80000000)</text>
+  <text x="540" y="1095" text-anchor="middle" font-size="11" fill="#334155">= 只留 ES_CONTINUOUS，等于撤销请求</text>
+  <line x1="540" y1="1102" x2="540" y2="1138" stroke="#475569" stroke-width="2" marker-end="url(#ar)"/>
+
+  <!-- ⑨ -->
+  <rect x="280" y="1140" width="520" height="86" rx="10" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.8"/>
+  <text x="540" y="1168" text-anchor="middle" font-size="15" font-weight="700" fill="#4c1d95">⑨ 锁释放，回到你原本的电源计划</text>
+  <text x="540" y="1192" text-anchor="middle" font-size="12" fill="#2e1065">空闲 5 分钟 → 睡眠（300 秒） · 空闲 15 分钟 → 休眠（900 秒）</text>
+  <text x="540" y="1214" text-anchor="middle" font-size="12" fill="#2e1065">关屏 5 分钟（这条从头到尾没被改过）</text>
+</svg>
+  </div>
+
+  <div class="card">
+    <h2>图例</h2>
+    <div class="legend">
+      <div class="lg"><div class="dot" style="background:#64748b"></div><div><b>灰</b> · 触发入口<br>你的手动动作、判断条件</div></div>
+      <div class="lg"><div class="dot" style="background:#2563eb"></div><div><b>蓝</b> · 开关脚本<br><code>keepawake-toggle.ps1</code>，活几秒就退出</div></div>
+      <div class="lg"><div class="dot" style="background:#059669"></div><div><b>绿</b> · 看门狗<br><code>dsh-keepawake-watch.ps1</code>，常驻后台</div></div>
+      <div class="lg"><div class="dot" style="background:#d97706"></div><div><b>橙</b> · Windows 内核<br>真正决定睡不睡的那一层</div></div>
+      <div class="lg"><div class="dot" style="background:#7c3aed"></div><div><b>紫</b> · 最终结果<br>回到原电源计划</div></div>
+      <div class="lg"><div class="dot" style="background:#b91c1c"></div><div><b>红</b> · 关闭分支<br>杀进程、放锁</div></div>
+    </div>
+    <div class="note">
+      <b>形状含义：</b>圆角框 = 一步操作；圆圈「或」= 逻辑或（两个信号满足一个就算忙）；箭头 = 控制流，指向下一步。
+      左边那条自己绕回来的箭头 = 主循环，每 10 秒重复一次。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>为什么必须连屏幕一起保活 <span>这是踩过的坑</span></h2>
+    <table>
+      <tr><th style="width:150px">事实</th><th>说明</th></tr>
+      <tr><td>这台机器只有 S0</td><td><code>powercfg /a</code> 显示只支持「待机 (S0 低电量待机) 连接的网络」，S1/S2/S3 都不支持。</td></tr>
+      <tr><td>S0 的进入条件</td><td>现代待机由**屏幕关闭**触发（事件 506，Reason: Idle Timeout），不是独立于屏幕的空闲计时器。</td></tr>
+      <tr><td>只申请系统会怎样</td><td><code>ES_SYSTEM_REQUIRED</code> 只能阻止传统睡眠，挡不住 S0。实测 21:15:31 持锁 <code>0x80000001</code>，21:41:52 仍进入待机。</td></tr>
+      <tr><td>修复</td><td>加上 <code>ES_DISPLAY_REQUIRED</code>，flags 变 <code>0x80000003</code>；并在每一轮轮询里重申一次，防止系统超时回收。</td></tr>
+      <tr><td>验证</td><td>21:46:12 换成 <code>0x80000003</code> 后，连续 12 分钟无任何待机事件（此前每 10～30 分钟必进一次）。</td></tr>
+    </table>
+    <div class="note">
+      <b>代价：</b>思考期间屏幕不会自动关闭。如果你更在意省电、宁可让机器进待机，可以加 <code>-AllowDisplayOff</code> 启动——但那样等于关掉了保活本身。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>两个信号具体查什么</h2>
+    <table>
+      <tr><th style="width:70px">信号</th><th style="width:220px">怎么查</th><th>为什么能代表「我在思考」</th></tr>
+      <tr>
+        <td><b>A</b> 会话文件</td>
+        <td><code>Get-ChildItem %USERPROFILE%\.dsh\sessions -Recurse -Filter session.v4.jsonl.*</code> 取最新的修改时间</td>
+        <td>我每想一步、每调一次工具，这轮对话都会落盘一次。文件在动 = 我正在干活。</td>
+      </tr>
+      <tr>
+        <td><b>B</b> 网络连接</td>
+        <td><code>Get-NetTCPConnection -State Established</code> 筛出归属「DeepSeek Harness」进程、远程端口 443、且不是回环/内网的连接</td>
+        <td>模型是流式返回的，思考时连接一直挂着。有这条连接 = 正在跟模型对话。</td>
+      </tr>
+    </table>
+    <div class="note">
+      两个信号是「或」关系，所以两种极端情况都覆盖到：<b>纯本地狂算</b>（文件在写、但没网络）和<b>纯等模型</b>（网络在挂、但一时没落盘）。
+      反过来，只要两个都静下来，就说明我真的停手了。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>一次完整的真实过程</h2>
+    <table>
+      <tr><th style="width:130px">时刻</th><th style="width:230px">看门狗看到什么</th><th>做了什么</th></tr>
+      <tr><td>T+0 秒</td><td>你按下回车，DSH 开始思考</td><td>会话文件被写入</td></tr>
+      <tr><td>T+0～10 秒</td><td>下一轮轮询发现文件刚被改过</td><td>上锁 <code>0x80000001</code>，写日志「DSH 忙 -&gt; 持锁」</td></tr>
+      <tr><td>整个思考期间</td><td>文件一直有变动 / 443 连接一直挂着</td><td>持续持锁，电脑不会睡</td></tr>
+      <tr><td>你关掉窗口后</td><td>两个信号都消失，开始计静默</td><td>继续持锁（留缓冲）</td></tr>
+      <tr><td>静默满 5 分钟</td><td>静默时长 ≥ 5 分钟</td><td>释放锁 <code>0x80000000</code>，写日志「释放锁」</td></tr>
+      <tr><td>再往后</td><td>无人操作</td><td>5 分钟关屏 → 5 分钟睡眠 → 15 分钟休眠</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>文件清单</h2>
+    <table>
+      <tr><th style="width:250px">文件</th><th style="width:120px">角色</th><th>说明</th></tr>
+      <tr><td><code>keepawake-toggle.ps1</code></td><td>开关</td><td>唯一的入口。双击 → 切换；<code>-Action On/Off/Status</code> 可指定。<b>自己不持锁</b>，只负责起停看门狗。</td></tr>
+      <tr><td><code>dsh-keepawake-watch.ps1</code></td><td>看门狗</td><td>常驻后台，<b>真正持锁的那个进程</b>。退出时（哪怕是强杀）会在 finally 里放锁。</td></tr>
+      <tr><td><code>keepawake-status.ps1</code></td><td>命令行查状态</td><td>加 <code>-Stop</code> 可停。</td></tr>
+      <tr><td><code>keep-awake.ps1</code></td><td>简单版</td><td>不看 DSH，固定保活 N 分钟，到点自动放。适合跑长任务。</td></tr>
+      <tr><td><code>install-keepawake-autostart.ps1</code></td><td>可选</td><td>装成登录自启。<b>按你的要求没装</b>。</td></tr>
+      <tr><td><code>%TEMP%\dsh-keepawake.pid</code></td><td>状态文件</td><td>记当前看门狗 PID，开关靠它判断「在不在跑」。</td></tr>
+      <tr><td><code>%TEMP%\dsh-keepawake.log</code></td><td>日志</td><td>每次持锁/放锁一行，带原因。排查时看这个。</td></tr>
+    </table>
+  </div>
+
+  <p class="foot">生成于 2026-11-07 · 对应电源计划「平衡」：睡眠 300 秒 / 休眠 900 秒 / 关屏 300 秒</p>
+</div>
+</body>
+</html>
