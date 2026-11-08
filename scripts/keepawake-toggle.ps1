@@ -13,8 +13,11 @@ param(
     [ValidateSet('Toggle', 'On', 'Off', 'Status')]
     [string]$Action = 'Toggle',
     [double]$IdleMinutes = 5,
-    # 默认连屏幕一起保活: 本机只有现代待机(S0), 屏幕一关就进待机
-    [switch]$AllowDisplayOff,
+    # 默认允许息屏: 屏幕照常按电源计划关闭, 只阻止系统睡眠/休眠。
+    # 若这台机器关屏就会进待机, 看门狗会自己发现并升级为屏幕常亮(见 -NoAutoDisplayOn)。
+    [switch]$KeepDisplayOn,
+    # 关掉自动升级: 宁可让系统睡, 也不申请屏幕常亮
+    [switch]$NoAutoDisplayOn,
     [switch]$Quiet
 )
 
@@ -64,7 +67,8 @@ function Show-Msg([string]$text) {
 function Start-Watchdog {
     if (-not (Test-Path $watchScript)) { return "找不到 $watchScript" }
     $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$watchScript`" -IdleMinutes $IdleMinutes"
-    if ($AllowDisplayOff) { $argList += ' -AllowDisplayOff' }
+    if ($KeepDisplayOn) { $argList += ' -KeepDisplayOn' }
+    if ($NoAutoDisplayOn) { $argList += ' -NoAutoDisplayOn' }
     $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -WindowStyle Hidden -PassThru
     if (-not $proc) { return "启动失败 ❌`n`n没能创建后台进程。" }
     Set-Content -Path $pidFile -Value $proc.Id -Encoding ASCII
@@ -73,7 +77,13 @@ function Start-Watchdog {
         Remove-Item $pidFile -ErrorAction SilentlyContinue
         return "启动失败 ❌`n`n后台进程刚起来就退出了。日志: $logFile"
     }
-    $extra = if ($AllowDisplayOff) { '，屏幕仍会按计划关闭（本机会因此进待机，不建议）' } else { '，屏幕会一起保持常亮' }
+    if ($KeepDisplayOn) {
+        $extra = '，屏幕也会一起保持常亮'
+    } elseif ($NoAutoDisplayOn) {
+        $extra = '，屏幕照常关闭（关屏后可能进待机，已按你的要求不自动亮屏）'
+    } else {
+        $extra = '，屏幕照常按你的计划关闭；若这台机器关屏就会进待机，看门狗会自动改成屏幕常亮'
+    }
     return "已开启  ✅`n`n我思考、调工具、跟模型对话的期间，电脑不会自动睡眠或休眠$extra。`n停止干活满 $IdleMinutes 分钟后自动放开，恢复你原本的睡眠计划。"
 }
 

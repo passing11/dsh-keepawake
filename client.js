@@ -23,7 +23,7 @@ window.__ModuleLoader__.load({
       'panel.on': '已开启',
       'panel.off': '已关闭',
       'panel.unknown': '读取中…',
-      'panel.onHint': '我思考、调工具、跟模型对话的期间，电脑不会自动睡眠或休眠。',
+      'panel.onHint': '我思考、调工具、跟模型对话的期间，电脑不会自动睡眠或休眠。屏幕照常按你的计划关闭。',
       'panel.offHint': '电脑按原来的计划睡眠 / 休眠。',
       'panel.turnOn': '开启保活',
       'panel.turnOff': '关闭保活',
@@ -49,7 +49,7 @@ window.__ModuleLoader__.load({
       'panel.off': 'Off',
       'panel.unknown': 'Reading…',
       'panel.onHint':
-        'While I think, call tools and talk to the model, the PC will not sleep or hibernate.',
+        'While I think, call tools and talk to the model, the PC will not sleep or hibernate. The display still follows your power plan.',
       'panel.offHint': 'The PC follows its usual sleep / hibernate plan.',
       'panel.turnOn': 'Turn on',
       'panel.turnOff': 'Turn off',

@@ -23,19 +23,30 @@ DSH 一次思考可能几分钟到十几分钟。Windows 的空闲计时器不�
 
 S1/S2/S3 显示「系统固件不支持」。
 
-**在 S0 机器上，只申请 `ES_SYSTEM_REQUIRED` 是挡不住的。** S0 的进入条件由**屏幕关闭**触发，不是独立的空闲计时器。实测：持锁 `0x80000001` 的进程还在跑，系统照样在关屏超时后进了 Modern Standby（事件日志 `Kernel-Power Id=506`，`Reason: Idle Timeout`）。
+**在 S0 机器上，只申请 `ES_SYSTEM_REQUIRED` 未必挡得住。** S0 的进入条件可能由**屏幕关闭**触发，而不是独立的空闲计时器。实测：持锁 `0x80000001` 的进程还在跑，系统照样在关屏超时后进了 Modern Standby（事件日志 `Kernel-Power Id=506`，`Reason: Idle Timeout`）。
 
-所以本插件默认**同时申请 `ES_DISPLAY_REQUIRED`**：
+但「关屏就一定进待机」并不普遍——取决于机型和固件。所以本插件**默认允许息屏**，然后自己验证：
 
 ```powershell
 $flags = $ES_CONTINUOUS -bor $ES_SYSTEM_REQUIRED
-if (-not $AllowDisplayOff) { $flags = $flags -bor $ES_DISPLAY_REQUIRED }
-# -> 0x80000003
+if ($KeepDisplayOn) { $flags = $flags -bor $ES_DISPLAY_REQUIRED }
+# 默认 -> 0x80000001（屏幕照常关）
+# 加 -KeepDisplayOn -> 0x80000003（屏幕常亮）
 ```
 
-并且每 10 秒重申一次，防止 S0 下屏幕常亮请求被系统超时回收。
+持锁期间每 60 秒查一次事件日志。如果发现这段持锁时间里出现过 `Kernel-Power Id=506`（进入 S0）或 `Id=42`（进入睡眠），说明这台机器**关屏即待机**、光靠系统唤醒请求挡不住，于是自动补上 `ES_DISPLAY_REQUIRED` 并写进日志：
 
-**代价**：开启期间屏幕不会自动关闭。这是 S0 硬件的限制，没有中间选项。想省电就用 `-AllowDisplayOff`，但那样等于关掉了保活本身。
+```
+检测到持锁期间仍进了待机 -> 自动改为屏幕常亮, flags=0x80000003（本机关屏即待机, 只申请系统唤醒挡不住）
+```
+
+这样在「关屏不影响待机」的机器上屏幕能正常省电，在「关屏即待机」的机器上自动兜底。
+
+| 场景 | 用法 |
+|:--|:--|
+| 想省电，接受自动兜底 | 默认，什么都不用加 |
+| 明确要屏幕常亮，不做试探 | `-KeepDisplayOn` |
+| 宁可系统睡，也不要亮屏 | `-NoAutoDisplayOn` |
 
 ## 工作方式
 
@@ -114,8 +125,11 @@ dsh plugin --profile <你的 profile> add dsh-keepawake
 # 自定义空闲阈值（分钟，支持小数）
 .\keepawake-toggle.ps1 -IdleMinutes 3
 
-# 允许屏幕关闭（等于放弃保活，只留系统锁）
-.\keepawake-toggle.ps1 -AllowDisplayOff
+# 直接屏幕常亮（跳过"允许息屏"的试探）
+.\keepawake-toggle.ps1 -KeepDisplayOn
+
+# 宁可系统睡，也不要自动亮屏
+.\keepawake-toggle.ps1 -NoAutoDisplayOn
 ```
 
 看门狗日志：`%TEMP%\dsh-keepawake.log`
@@ -150,7 +164,7 @@ Get-WinEvent -FilterHashtable @{LogName='System'; Id=42,506,107} | Select-Object
 
 - **只支持 Windows。** 其他平台插件会显示「保活开关只在 Windows 上可用」。
 - **DSH 重启会断。** 看门狗是独立进程，DSH 被整棵杀掉时它一起没。
-- **屏幕不会关。** 见上文 S0 一节。
+- **关屏即待机的机器上屏幕会保持常亮。** 默认允许息屏，但若检测到持锁期间仍进了待机，会自动升级为屏幕常亮（见上文 S0 一节）。不想亮屏用 `-NoAutoDisplayOn`，代价是那台机器上保活可能失效。
 - **不跨用户会话。** 锁是线程级的，用户注销就没了。
 
 ## 文件

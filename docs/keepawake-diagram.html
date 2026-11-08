@@ -120,16 +120,16 @@
   <!-- ⑥ -->
   <rect x="340" y="752" width="400" height="86" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="1.8"/>
   <text x="540" y="780" text-anchor="middle" font-size="15" font-weight="700" fill="#064e3b">⑥ 忙 且 没在持锁 → 上锁</text>
-  <text x="540" y="803" text-anchor="middle" font-size="10.5" fill="#334155" font-family="Consolas,monospace">SetThreadExecutionState(0x80000003)</text>
-  <text x="540" y="823" text-anchor="middle" font-size="11" fill="#334155">= ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED</text>
+  <text x="540" y="803" text-anchor="middle" font-size="10.5" fill="#334155" font-family="Consolas,monospace">SetThreadExecutionState(0x80000001)</text>
+  <text x="540" y="823" text-anchor="middle" font-size="11" fill="#334155">= ES_CONTINUOUS | ES_SYSTEM_REQUIRED（屏幕照常关）</text>
   <line x1="540" y1="838" x2="540" y2="866" stroke="#475569" stroke-width="2" marker-end="url(#ar)"/>
 
   <!-- ⑦ 内核 -->
   <rect x="280" y="868" width="520" height="120" rx="10" fill="#fffbeb" stroke="#d97706" stroke-width="1.8"/>
   <text x="540" y="896" text-anchor="middle" font-size="15" font-weight="700" fill="#78350f">⑦ Windows 内核：这期间不许睡</text>
   <text x="540" y="920" text-anchor="middle" font-size="12" fill="#451a03">电源管理器认为系统有活动 → 不进入待机，也不休眠</text>
-  <text x="540" y="944" text-anchor="middle" font-size="12" fill="#451a03">同时也申请了 ES_DISPLAY_REQUIRED（屏幕别关）</text>
-  <text x="540" y="966" text-anchor="middle" font-size="12" fill="#451a03">→ 本机只有现代待机(S0)，屏幕一关就等于进待机</text>
+  <text x="540" y="944" text-anchor="middle" font-size="12" fill="#451a03">默认只申请 ES_SYSTEM_REQUIRED，屏幕照常按计划关闭</text>
+  <text x="540" y="966" text-anchor="middle" font-size="12" fill="#451a03">若发现持锁期间仍进了待机 → 自动补 ES_DISPLAY_REQUIRED</text>
   <line x1="540" y1="988" x2="540" y2="1024" stroke="#475569" stroke-width="2" marker-end="url(#ar)"/>
 
   <!-- ⑧ -->
@@ -164,17 +164,17 @@
   </div>
 
   <div class="card">
-    <h2>为什么必须连屏幕一起保活 <span>这是踩过的坑</span></h2>
+    <h2>屏幕管不管：自动兜底 <span>这是踩过的坑</span></h2>
     <table>
       <tr><th style="width:150px">事实</th><th>说明</th></tr>
-      <tr><td>这台机器只有 S0</td><td><code>powercfg /a</code> 显示只支持「待机 (S0 低电量待机) 连接的网络」，S1/S2/S3 都不支持。</td></tr>
-      <tr><td>S0 的进入条件</td><td>现代待机由**屏幕关闭**触发（事件 506，Reason: Idle Timeout），不是独立于屏幕的空闲计时器。</td></tr>
-      <tr><td>只申请系统会怎样</td><td><code>ES_SYSTEM_REQUIRED</code> 只能阻止传统睡眠，挡不住 S0。实测 21:15:31 持锁 <code>0x80000001</code>，21:41:52 仍进入待机。</td></tr>
-      <tr><td>修复</td><td>加上 <code>ES_DISPLAY_REQUIRED</code>，flags 变 <code>0x80000003</code>；并在每一轮轮询里重申一次，防止系统超时回收。</td></tr>
+      <tr><td>有些机器只有 S0</td><td><code>powercfg /a</code> 显示只支持「待机 (S0 低电量待机) 连接的网络」，S1/S2/S3 都不支持。</td></tr>
+      <tr><td>S0 的进入条件</td><td>在部分 S0 机型上现代待机由<b>屏幕关闭</b>触发（事件 506，Reason: Idle Timeout），不是独立于屏幕的空闲计时器。</td></tr>
+      <tr><td>只申请系统会怎样</td><td><code>ES_SYSTEM_REQUIRED</code> 只能阻止传统睡眠。实测 21:15:31 持锁 <code>0x80000001</code>，21:41:52 仍进入待机。</td></tr>
+      <tr><td>所以默认怎么做</td><td>默认允许息屏（<code>0x80000001</code>），但每 60 秒查一次事件日志。发现持锁期间出现过 506/42，就自动补上 <code>ES_DISPLAY_REQUIRED</code> 变 <code>0x80000003</code>。</td></tr>
       <tr><td>验证</td><td>21:46:12 换成 <code>0x80000003</code> 后，连续 12 分钟无任何待机事件（此前每 10～30 分钟必进一次）。</td></tr>
     </table>
     <div class="note">
-      <b>代价：</b>思考期间屏幕不会自动关闭。如果你更在意省电、宁可让机器进待机，可以加 <code>-AllowDisplayOff</code> 启动——但那样等于关掉了保活本身。
+      <b>三种用法：</b>默认（允许息屏 + 自动兜底）、<code>-KeepDisplayOn</code>（直接常亮，不试探）、<code>-NoAutoDisplayOn</code>（宁可系统睡，也不自动亮屏）。
     </div>
   </div>
 
