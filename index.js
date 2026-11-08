@@ -1,7 +1,7 @@
 /**
  * DSH 保活开关 — Host half.
  *
- * Serves one JSON endpoint that the right-sidebar panel talks to:
+ * Serves one JSON endpoint that the composer chip talks to:
  *   GET  /dsh-keepawake/api  -> read the live state
  *   POST /dsh-keepawake/api  -> { action: 'on' | 'off' | 'refresh' }
  *

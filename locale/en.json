@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "DSH keep-awake switch",
-    "description": "A switch in the right sidebar: while it is on, the PC stays awake through DSH thinking, tool calls and model conversations"
+    "description": "A small chip below the input box: while it is on, the PC stays awake through DSH thinking, tool calls and model conversations"
   }
 }

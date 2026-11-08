@@ -1,7 +1,7 @@
 {
   "name": "dsh-keepawake",
   "version": "1.0.0",
-  "description": "DSH 保活开关：在会话右侧放一个开关，开启期间 DSH 思考、调工具、跟模型对话时电脑不会睡眠/休眠（Windows）。",
+  "description": "DSH 保活开关：输入框下面一个小按钮，开启期间 DSH 思考、调工具、跟模型对话时电脑不会睡眠/休眠（Windows）。",
   "type": "module",
   "main": "index.js",
   "icon": "icon.svg",
@@ -33,8 +33,7 @@
       "immediately": true,
       "inject": [
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-slots",
-        "@deepseek-ai/dsh-client-ui-sidebar-right"
+        "@deepseek-ai/dsh-client-ui-slots"
       ]
     }
   },

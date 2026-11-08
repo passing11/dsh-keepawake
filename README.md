@@ -1,6 +1,6 @@
 # dsh-keepawake
 
-DSH 保活开关 —— 在会话右侧放一个开关，开启期间 DSH 思考、调工具、跟模型对话时电脑不会睡眠/休眠。
+DSH 保活开关 —— 输入框下面一个小按钮，开启期间 DSH 思考、调工具、跟模型对话时电脑不会睡眠/休眠。
 
 Windows 专用。核心是一个 PowerShell 看门狗，用 `SetThreadExecutionState` 向内核申请执行状态锁；插件只是给它加了一个能点开、能点关的界面。
 
@@ -102,7 +102,7 @@ dsh plugin --profile <你的 profile> add dsh-keepawake
 
 ### 3. 打开
 
-在右侧栏的 tab 条上找「保活」。
+按钮出现在**输入框正下方**那一行，和宿主的统计小胶囊（活动、用量）并排。开着时显示「保活中」并带一个绿点，关着时只显示「保活」。点一下切换。
 
 ## 命令行用法
 
@@ -162,7 +162,7 @@ Get-WinEvent -FilterHashtable @{LogName='System'; Id=42,506,107} | Select-Object
 
 ## 已知限制
 
-- **只支持 Windows。** 其他平台插件会显示「保活开关只在 Windows 上可用」。
+- **只支持 Windows。** 其他平台上按钮直接不出现，不会占着那一行显示一个点不动的死按钮。
 - **DSH 重启会断。** 看门狗是独立进程，DSH 被整棵杀掉时它一起没。
 - **关屏即待机的机器上屏幕会保持常亮。** 默认允许息屏，但若检测到持锁期间仍进了待机，会自动升级为屏幕常亮（见上文 S0 一节）。不想亮屏用 `-NoAutoDisplayOn`，代价是那台机器上保活可能失效。
 - **不跨用户会话。** 锁是线程级的，用户注销就没了。
@@ -171,7 +171,7 @@ Get-WinEvent -FilterHashtable @{LogName='System'; Id=42,506,107} | Select-Object
 
 ```
 index.js                        host 半：/dsh-keepawake/api 路由
-client.js                       client 半：右侧栏 tab
+client.js                       client 半：输入框下方的开关按钮
 cordis.patch.yml                bundle 挂载声明
 locale/{zh,en}.json             语言包
 icon.svg                        图标
