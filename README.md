@@ -100,6 +100,13 @@ dsh plugin --profile <你的 profile> add dsh-keepawake
 
 或者手动把本仓库 link 进 profile 的 `dependencies` 和 `dsh.profile.bundles`。
 
+> **`client.js` 第一行的 `id` 必须等于 `package.json` 的 `name`。**
+> 宿主按「Loader entry 名 = 包名」去找浏览器模块；`client.js` 里注册的 `id` 对不上，
+> 宿主会判定「bundle 加载了但没注册这个 id」，整个 client 半静默失效 —— 服务端
+> 接口照常返回 200，界面上却什么都不会出现。
+> 本仓库的包名就是 `dsh-keepawake`，所以这里两边一致；如果你把它装成别的名字
+> （比如 DSH 新建插件时自动生成的 `@dsh-local/view-<uuid>`），记得同步改 `client.js` 的 `id`。
+
 ### 3. 打开
 
 按钮出现在**输入框正下方**那一行，和宿主的统计小胶囊（活动、用量）并排。开着时显示「保活中」并带一个绿点，关着时只显示「保活」。点一下切换。
