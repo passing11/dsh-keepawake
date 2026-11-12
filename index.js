@@ -23,6 +23,12 @@ const SCRIPT_NAME = 'keepawake-toggle.ps1'
 const LOG_NAME = 'dsh-keepawake.log'
 /** How long a single PowerShell call may take. */
 const CALL_TIMEOUT_MS = 20000
+/** Independent settings file — never the UI state file (collectState rewrites that one). */
+const CONFIG_NAME = '.dsh-keepawake-config.json'
+/** Marker file the watchdog reads; the ps1 hard-codes the same absolute path. */
+const WAITING_NAME = 'dsh-keepawake-waiting.json'
+/** How often the host republishes the "waiting for the user" flag. */
+const WAITING_TICK_MS = 10000
 
 /** DSH home, matching the host's own convention. */
 function dshHome() {
@@ -37,6 +43,56 @@ function stateFile() {
 /** Watchdog log path (`$env:TEMP\dsh-keepawake.log`). */
 function logFile() {
   return path.join(os.tmpdir(), LOG_NAME)
+}
+
+/** Absolute path of the independent settings file. */
+function configFile() {
+  return path.join(dshHome(), CONFIG_NAME)
+}
+
+/** Marker path — `%USERPROFILE%\.dsh\dsh-keepawake-waiting.json` on the ps1 side. */
+function waitingFile() {
+  return path.join(dshHome(), WAITING_NAME)
+}
+
+/**
+ * Read the preference; missing or malformed reads as false.
+ * @returns {{keepAwakeWhileWaiting: boolean}} the stored preference.
+ */
+function readConfig() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configFile(), 'utf8'))
+    if (parsed && typeof parsed === 'object') {
+      return { keepAwakeWhileWaiting: parsed.keepAwakeWhileWaiting === true }
+    }
+  } catch {
+    /* first run, or the file was removed */
+  }
+  return { keepAwakeWhileWaiting: false }
+}
+
+/**
+ * Persist the preference in its own file; throws so the route can report a real failure.
+ * @param {{keepAwakeWhileWaiting: boolean}} next - preference to store.
+ */
+function writeConfig(next) {
+  const file = configFile()
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify({ keepAwakeWhileWaiting: next.keepAwakeWhileWaiting === true }, null, 2), 'utf8')
+}
+
+/**
+ * Publish the waiting flag for the watchdog (best effort).
+ * @param {boolean} waiting - true while the turn is back with the user.
+ */
+function writeWaiting(waiting) {
+  try {
+    const file = waitingFile()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify({ waiting: waiting === true, at: new Date().toISOString(), pid: process.pid }), 'utf8')
+  } catch {
+    /* a read-only home must not break the turn */
+  }
 }
 
 /**
@@ -120,14 +176,15 @@ function findScript(ctx, config) {
  * `-Quiet` makes the script print through `Write-Output`; the console encoding is
  * pinned to UTF-8 first, otherwise a Chinese Windows console hands back OEM bytes.
  * @param {string} scriptPath - absolute path of `keepawake-toggle.ps1`.
- * @param {'On' | 'Off' | 'Status'} action - script action.
+ * @param {'On' | 'Off' | 'Status' | 'Restart'} action - script action.
  * @param {number} timeoutMs - hard timeout for the child process.
  * @returns {Promise<{ok: boolean, text: string, error: string}>} the outcome.
  */
 function runSwitch(scriptPath, action, timeoutMs = CALL_TIMEOUT_MS) {
   return new Promise((resolve) => {
     const quoted = scriptPath.replace(/'/g, "''")
-    const command = `[Console]::OutputEncoding=[Text.Encoding]::UTF8; & '${quoted}' -Action ${action} -Quiet`
+    const waitFlag = readConfig().keepAwakeWhileWaiting ? ' -WaitKeepAwake' : ''
+    const command = `[Console]::OutputEncoding=[Text.Encoding]::UTF8; & '${quoted}' -Action ${action} -Quiet${waitFlag}`
     let settled = false
     let stdout = ''
     let stderr = ''
@@ -216,7 +273,9 @@ function readLogInfo() {
       info.reasonAt = locked[1]
       continue
     }
-    const released = line.match(/^(\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+空闲 .*释放锁/)
+    // Two releases count: the idle timer, and the immediate one when the turn
+    // comes back to the user ("轮到用户 -> 立刻放锁").
+    const released = line.match(/^(\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(?:空闲 .*释放锁|轮到用户.*(?:放锁|释放锁))/)
     if (released) info.releasedAt = released[1]
   }
   return info
@@ -234,6 +293,7 @@ async function collectState(ctx, config) {
   const script = findScript(ctx, config)
   const payload = {
     ok: true,
+    config: readConfig(),
     platform: process.platform,
     scriptPath: script,
     scriptFound: script !== null,
@@ -400,6 +460,162 @@ function sendJson(res, status, payload) {
 }
 
 /**
+ * Track "it is the user's turn" and publish it for the watchdog.
+ *
+ * Three facts, all checked against app.asar:
+ *  - `user-questions/request` and `approval/request` are `mode:'waterfall'`
+ *    events dispatched through the agent's scope carrier. A listener registered
+ *    with `{ global: true }` bypasses that scope filter (cordis `_resolve`
+ *    keeps `hook.global` unconditionally), so wrapping the answer gives an exact
+ *    `pending > 0` for "the agent is blocked on the user right now".
+ *  - `agent/status` is `mode:'emit'` and fires only on a transition — there is
+ *    no initial snapshot — but its payload is fused with the live `agent`
+ *    (`agentEvents` -> `fused = (payload) => ({ ...payload, agent })`).
+ *  - `ctx.get('agents')` is strict: it answers `undefined` unless this fiber
+ *    actually injected the service, so the running set is tracked from events
+ *    and only reconciled against `agents.roots()` once injection succeeds.
+ *
+ * waiting = pending > 0 || knownRunning === 0.
+ * While the running set is still unknowable, "not waiting" wins: a stuck
+ * `waiting: true` silently disables the whole keep-awake switch, whereas a late
+ * first transition only postpones one idle detection.
+ * @param {object} ctx - host context.
+ * @returns {{dispose: () => void, attach: (agents: object) => void, detach: () => void}} tracker.
+ */
+function createWaitingTracker(ctx) {
+  let pending = 0
+  let agentsService = null
+  let sawAgentEvent = false
+  const running = new Set()
+  const offs = []
+  let disposed = false
+
+  const rootsOf = () => {
+    if (agentsService === null) return null
+    try {
+      const roots = agentsService.roots()
+      return Array.isArray(roots) ? roots : null
+    } catch {
+      return null
+    }
+  }
+
+  const runningCount = () => {
+    const roots = rootsOf()
+    if (roots !== null) {
+      let count = 0
+      for (const agent of roots) if (agent && agent.status === 'running') count += 1
+      return count
+    }
+    // No injected service and no event yet: we cannot tell, so do not claim the turn.
+    if (!sawAgentEvent) return 1
+    return running.size
+  }
+
+  const publish = () => {
+    if (disposed) return
+    writeWaiting(pending > 0 || runningCount() === 0)
+  }
+
+  // Waterfall: +1 on entry, -1 once next() settles, always returning its value.
+  const guard = (request, next) => {
+    pending += 1
+    publish()
+    let result
+    try {
+      result = next()
+    } catch (error) {
+      pending -= 1
+      publish()
+      throw error
+    }
+    return Promise.resolve(result).then(
+      (value) => {
+        pending -= 1
+        publish()
+        return value
+      },
+      (error) => {
+        pending -= 1
+        publish()
+        throw error
+      },
+    )
+  }
+
+  const listen = (name, listener, options) => {
+    try {
+      const off = options === undefined ? ctx.on?.(name, listener) : ctx.on?.(name, listener, options)
+      if (typeof off === 'function') offs.push(off)
+    } catch {
+      /* event absent on this host build */
+    }
+  }
+
+  // Reconcile one agent's membership from any event that carries it.
+  const syncAgent = (payload) => {
+    const agent = payload && payload.agent
+    if (!agent) return
+    if (agent.status === 'running') running.add(agent)
+    else running.delete(agent)
+  }
+
+  // Only `agent/status` proves the running set is observable: it is the one event
+  // that reports a transition for an agent we may have missed being created.
+  const onStatus = (payload) => {
+    sawAgentEvent = true
+    syncAgent(payload)
+    publish()
+  }
+
+  const onCreated = (payload) => {
+    syncAgent(payload)
+    publish()
+  }
+
+  const onDisposed = (payload) => {
+    const agent = payload && payload.agent
+    if (agent) running.delete(agent)
+    publish()
+  }
+
+  publish()
+  // `{ global: true }` is what makes these reachable from this plugin's scope:
+  // the host dispatches them through the agent's carrier, and without the flag
+  // cordis filters every listener whose fiber is not that agent's.
+  listen('user-questions/request', guard, { global: true })
+  listen('approval/request', guard, { global: true })
+  listen('agent/status', onStatus, { global: true })
+  listen('agent/created', onCreated, { global: true })
+  listen('agent/disposed', onDisposed, { global: true })
+
+  const timer = setInterval(publish, WAITING_TICK_MS)
+  if (timer && typeof timer.unref === 'function') timer.unref()
+
+  return {
+    dispose() {
+      disposed = true
+      clearInterval(timer)
+      for (const off of offs) {
+        try {
+          off()
+        } catch {
+          /* already detached */
+        }
+      }
+      writeWaiting(false)
+    },
+    attach(agents) {
+      agentsService = agents && typeof agents.roots === 'function' ? agents : null
+      publish()
+    },
+    detach() {
+      agentsService = null
+    },
+  }
+}
+
+/**
  * Install the route for as long as the plugin is loaded.
  * @param {object} ctx - host context (already waiting on the web server).
  * @param {object} config - plugin config.
@@ -427,8 +643,42 @@ function installRoute(ctx, config) {
           return
         }
         const action = typeof body.action === 'string' ? body.action.toLowerCase() : 'refresh'
-        if (action !== 'on' && action !== 'off' && action !== 'refresh') {
+        if (action !== 'on' && action !== 'off' && action !== 'refresh' && action !== 'config') {
           sendJson(res, 400, { ok: false, error: `不支持的动作：${action}` })
+          return
+        }
+
+        if (action === 'config') {
+          const patch = body.config && typeof body.config === 'object' ? body.config : {}
+          if (typeof patch.keepAwakeWhileWaiting !== 'boolean') {
+            sendJson(res, 400, { ok: false, error: 'config.keepAwakeWhileWaiting 必须是布尔值' })
+            return
+          }
+          const next = { keepAwakeWhileWaiting: patch.keepAwakeWhileWaiting }
+          try {
+            writeConfig(next)
+          } catch (error) {
+            sendJson(res, 200, { ok: false, error: `写配置失败：${String((error && error.message) || error)}` })
+            return
+          }
+          const target = findScript(ctx, config)
+          let restarted = false
+          let failure = ''
+          if (target !== null) {
+            const before = await runSwitch(target, 'Status')
+            if (parseStatus(before.text).enabled) {
+              const result = await runSwitch(target, 'Restart') // 内部重读刚写好的 config
+              restarted = result.ok
+              if (!result.ok) failure = result.error || '重启看门狗失败'
+            }
+          }
+          const state = await collectState(ctx, config)
+          sendJson(res, 200, {
+            ...state,
+            ok: state.ok && failure.length === 0,
+            restarted,
+            error: failure || state.error,
+          })
           return
         }
 
@@ -495,5 +745,19 @@ export function apply(ctx, config) {
         /* already torn down */
       }
     })
+  })
+
+  ctx.effect(() => {
+    const tracker = createWaitingTracker(ctx)
+    // Optional: when the agents service is injectable we get an exact live root
+    // set. Without it the tracker still works from agent events alone, so a host
+    // build that never provides the service must not take the switch down.
+    ctx.inject(['agents'], (scoped) => {
+      const agents = scoped.agents
+      if (!agents || typeof agents.roots !== 'function') return
+      tracker.attach(agents)
+      scoped.effect(() => () => tracker.detach())
+    })
+    return () => tracker.dispose()
   })
 }

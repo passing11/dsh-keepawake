@@ -22,6 +22,10 @@ window.__ModuleLoader__.load({
       'panel.busy': '切换中…',
       'panel.missing': '找不到 keepawake-toggle.ps1',
       'panel.missingHint': '把脚本放到工作区根目录，或在插件配置里指定 scriptPath。',
+      'settings.waitingTitle': '等待我回答时也保持唤醒',
+      'settings.waitingOff': '默认关闭：轮到你说话时立刻放锁，电脑可以按原计划睡眠。',
+      'settings.waitingOn': '已开启：弹出选项、等待审批，或一轮结束等你打字时也保持唤醒。',
+      'settings.saving': '保存中…',
     }
 
     const en = {
@@ -36,6 +40,12 @@ window.__ModuleLoader__.load({
       'panel.busy': 'Switching…',
       'panel.missing': 'keepawake-toggle.ps1 was not found',
       'panel.missingHint': 'Place the script in the workspace root, or set scriptPath in the plugin config.',
+      'settings.waitingTitle': 'Stay awake while waiting for me to answer',
+      'settings.waitingOff':
+        'Off by default: the lock is released the moment the turn comes back to you, so the PC can sleep as planned.',
+      'settings.waitingOn':
+        'On: the PC also stays awake while a question, an approval, or the end of a turn is waiting for your input.',
+      'settings.saving': 'Saving…',
     }
 
     /** Inline styles: the chip must never depend on another plugin's CSS. */
@@ -87,6 +97,36 @@ window.__ModuleLoader__.load({
 }
 .dsh-keepawake-dot[data-on='true'] {
   background: var(--dsw-alias-state-business-primary);
+}
+.dsh-keepawake-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 0;
+}
+.dsh-keepawake-rowText {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.dsh-keepawake-rowTitle {
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  line-height: 22px;
+}
+.dsh-keepawake-rowDesc {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+}
+.dsh-keepawake-switch {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  padding-top: 2px;
 }
 `
 
@@ -233,6 +273,93 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * Settings row: whether the watchdog keeps holding while the turn is back
+     * with the user. Reads and writes the host config; no shared store.
+     * @param {object} props - `{ copy }` from the slot inject face.
+     * @returns {object | null} the row element.
+     */
+    function KeepAwakeSettingsRow(props) {
+      const { copy } = props
+      const [config, setConfig] = React.useState(null)
+      const [busy, setBusy] = React.useState(false)
+      const [failure, setFailure] = React.useState('')
+      const alive = React.useRef(true)
+
+      React.useEffect(() => {
+        alive.current = true
+        return () => {
+          alive.current = false
+        }
+      }, [])
+
+      const refresh = React.useCallback(async () => {
+        try {
+          const next = await callApi('GET')
+          if (!alive.current) return
+          const raw = next && next.config && typeof next.config === 'object' ? next.config : null
+          setConfig(raw === null ? { keepAwakeWhileWaiting: false } : { keepAwakeWhileWaiting: raw.keepAwakeWhileWaiting === true })
+          setFailure(next && next.ok === false ? String(next.error || '') : '')
+        } catch (error) {
+          if (!alive.current) return
+          setConfig({ keepAwakeWhileWaiting: false })
+          setFailure(String((error && error.message) || error))
+        }
+      }, [])
+
+      React.useEffect(() => {
+        refresh()
+      }, [refresh])
+
+      const change = async (value) => {
+        setBusy(true)
+        try {
+          const result = await callApi('POST', { action: 'config', config: { keepAwakeWhileWaiting: value } })
+          if (!alive.current) return
+          const raw = result && result.config && typeof result.config === 'object' ? result.config : null
+          setConfig({ keepAwakeWhileWaiting: raw ? raw.keepAwakeWhileWaiting === true : value })
+          setFailure(result && result.ok === false ? String(result.error || '') : '')
+        } catch (error) {
+          if (!alive.current) return
+          setFailure(String((error && error.message) || error))
+        } finally {
+          if (alive.current) setBusy(false)
+        }
+      }
+
+      if (config === null && failure.length === 0) return null
+      const on = config !== null && config.keepAwakeWhileWaiting === true
+      const desc = busy
+        ? copy('settings.saving')
+        : failure.length > 0
+          ? failure
+          : on
+            ? copy('settings.waitingOn')
+            : copy('settings.waitingOff')
+
+      return h(
+        'div',
+        { className: 'dsh-keepawake-row' },
+        h(
+          'div',
+          { className: 'dsh-keepawake-rowText' },
+          h('div', { className: 'dsh-keepawake-rowTitle' }, copy('settings.waitingTitle')),
+          h('div', { className: 'dsh-keepawake-rowDesc', role: failure.length > 0 ? 'alert' : undefined }, desc),
+        ),
+        h(
+          'label',
+          { className: 'dsh-keepawake-switch' },
+          h('input', {
+            type: 'checkbox',
+            checked: on,
+            disabled: busy,
+            'aria-label': copy('settings.waitingTitle'),
+            onChange: (event) => change(event.target.checked === true),
+          }),
+        ),
+      )
+    }
+
     /** Services this plugin needs from the client runtime. */
     const inject = ['slots', 'locale']
 
@@ -300,6 +427,25 @@ window.__ModuleLoader__.load({
               inject: () => ({ copy }),
             },
             KeepAwakeChip,
+          )
+        } catch {
+          return () => {}
+        }
+      })
+
+      // General settings section: order 40 is free (shipped rows use
+      // -20,0,10,11,12,15,16,17,20,30,90,100 — verified in app.asar).
+      ctx.slots.inject('settings.general.item', () => {
+        try {
+          return ctx.slots.register(
+            {
+              name: 'settings.general.item',
+              id: 'keepawake-waiting',
+              order: 40,
+              locale: NS,
+              inject: () => ({ copy }),
+            },
+            KeepAwakeSettingsRow,
           )
         } catch {
           return () => {}

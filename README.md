@@ -71,6 +71,30 @@ if ($KeepDisplayOn) { $flags = $flags -bor $ES_DISPLAY_REQUIRED }
 
 流程图见 [`docs/keepawake-diagram.png`](docs/keepawake-diagram.png)（源文件 `docs/keepawake-diagram.html`）。
 
+## 配置项：等待我回答时是否保活
+
+**默认关闭。** 关着的时候，只要轮到你说话 —— 我弹了选择卡片、审批请求在等你，或者一轮已经结束在等你打字 —— 看门狗**立刻放锁**，不再走那 5 分钟空闲空转，电脑按原来的电源计划睡眠。日志里会多一行：
+
+```
+11-12 01:20:33  轮到用户 -> 立刻放锁, 恢复系统休眠计划
+```
+
+打开以后，轮到你的这段时间也算「还在忙」，锁继续持有，直到你回答、我重新开始干活，或你手动关掉保活。
+
+| 场景 | 默认（关） | 打开 |
+|:--|:--|:--|
+| 弹卡等你选 / 等你批准 | 立刻放锁，电脑可以睡 | 保持唤醒 |
+| 一轮结束等你打字 | 立刻放锁，电脑可以睡 | 保持唤醒 |
+| 我思考 / 调工具 / 跟模型对话 | 保持唤醒 | 保持唤醒 |
+
+- **开关位置**：设置 → 通用 → 勾选「等待我回答时也保持唤醒」
+- **名称 / 默认值**：`keepAwakeWhileWaiting` / `false`
+- **存在哪**：`%USERPROFILE%\.dsh\.dsh-keepawake-config.json`，内容形如 `{"keepAwakeWhileWaiting": true}`。这是独立文件，和界面状态缓存 `.dsh-keepawake-ui.json` 不是同一个 —— 后者会被状态刷新整文件重写
+- **改完会怎样**：写在设置页即时生效；若看门狗正在跑，插件会自动 `-Action Restart` 一次让新参数生效（主开关的开/关状态不变）
+- **命令行等价物**：`.\keepawake-toggle.ps1 -Action Restart` 会读这个配置文件决定带不带 `-WaitKeepAwake`，所以设置页改完直接 `Restart` 就生效；想临时覆盖一次，用 `-WaitKeepAwake`（强制开）或 `-NoWaitKeepAwake`（强制关）
+- **宿主半如何判断「轮到你」**：把「有未完成的提问/审批请求」或「没有 running 状态的根 agent」写进 `<DSH_HOME>\dsh-keepawake-waiting.json`（内容 `{waiting, at, pid}`），每 10 秒刷新一次；看门狗只认最后写入时间在 **90 秒**内的标记，DSH 崩了标记自然过期，不会永久放锁。拿不准的时候（宿主刚启动、还没收到任何 agent 事件）一律写 `false` —— 卡住的 `true` 会静默废掉整个开关，晚一次判定只推迟一次
+- **对应看门狗开关**：`-WaitKeepAwake`，由 `keepawake-toggle.ps1` 按配置文件自动追加，也可直接 `.\dsh-keepawake-watch.ps1 -WaitKeepAwake` 验证
+
 ## 安装
 
 ### 1. 放脚本
@@ -125,6 +149,12 @@ dsh plugin --profile <你的 profile> add dsh-keepawake
 
 # 只看状态
 .\keepawake-toggle.ps1 -Action Status
+
+# 在跑则重启(让新参数生效), 没跑则等同 On
+.\keepawake-toggle.ps1 -Action Restart
+
+# 重启并保持「等待用户也保活」
+.\keepawake-toggle.ps1 -Action Restart -WaitKeepAwake
 
 # 不弹窗，只打印
 .\keepawake-toggle.ps1 -Quiet
@@ -182,11 +212,18 @@ client.js                       client 半：输入框下方的开关按钮
 cordis.patch.yml                bundle 挂载声明
 locale/{zh,en}.json             语言包
 icon.svg                        图标
-scripts/keepawake-toggle.ps1    总开关
+scripts/keepawake-toggle.ps1    总开关（-Action On/Off/Toggle/Status/Restart，-WaitKeepAwake）
 scripts/dsh-keepawake-watch.ps1 看门狗
 scripts/keepawake-status.ps1    状态查询
 scripts/install-keepawake-autostart.ps1  开机自启（可选）
 docs/keepawake-diagram.*        流程图
+```
+
+运行时文件（程序生成，不在仓库里）：
+
+```
+%USERPROFILE%\.dsh\.dsh-keepawake-config.json  配置项(独立文件, 程序生成)
+%USERPROFILE%\.dsh\dsh-keepawake-waiting.json   「轮到用户」标记(宿主每 10 秒刷新)
 ```
 
 ## License

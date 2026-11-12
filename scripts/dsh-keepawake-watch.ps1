@@ -16,8 +16,15 @@ param(
     # 关掉自动升级: 即使发现持锁期间仍进了待机, 也不去申请屏幕常亮
     [switch]$NoAutoDisplayOn,
     [string]$LogFile = "$env:TEMP\dsh-keepawake.log",
-    [string]$SessionRoot = "$env:USERPROFILE\.dsh\sessions",
-    [string]$ProcessName = "DeepSeek Harness"
+    [string]$SessionRoot = $(if ($env:DSH_HOME) { Join-Path $env:DSH_HOME 'sessions' } else { "$env:USERPROFILE\.dsh\sessions" }),
+    [string]$ProcessName = "DeepSeek Harness",
+    # 轮到我说话(弹卡/审批/一轮结束等你打字)时也保持唤醒。默认不加 = 轮到我时立刻放锁
+    [switch]$WaitKeepAwake,
+    # 宿主写的「轮到用户」标记, 必须和 index.js waitingFile() 是同一个绝对路径
+    # (index.js 用 DSH_HOME || ~/.dsh, 这里保持一致)
+    [string]$WaitingFile = $(if ($env:DSH_HOME) { Join-Path $env:DSH_HOME 'dsh-keepawake-waiting.json' } else { "$env:USERPROFILE\.dsh\dsh-keepawake-waiting.json" }),
+    # 标记超过这么多秒没刷新就当不存在(宿主崩了不会永久放锁)
+    [int]$WaitingTtlSeconds = 90
 )
 
 Add-Type -Namespace W32 -Name Power -MemberDefinition @"
@@ -75,19 +82,57 @@ function Test-WentToSleep([datetime]$since) {
     }
 }
 
+# 宿主是否正在等我回答。文件不存在 / 读不出 / JSON 解析失败 / 超过 TTL 一律当"不在等"。
+function Get-WaitingUser {
+    if (-not (Test-Path -LiteralPath $WaitingFile -PathType Leaf)) { return $false }
+    try {
+        $item = Get-Item -LiteralPath $WaitingFile -ErrorAction Stop
+        if (((Get-Date) - $item.LastWriteTime).TotalSeconds -gt $WaitingTtlSeconds) { return $false }
+        $raw = Get-Content -LiteralPath $WaitingFile -Raw -Encoding UTF8 -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $false }
+        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+        return ($obj.waiting -eq $true)
+    } catch {
+        return $false
+    }
+}
+
 $holding = $false
 $lastBusy = [datetime]::MinValue
 $holdStarted = [datetime]::MinValue
 $displayUpgraded = $false
 $probeCount = 0
 $probeInterval = 6   # 每 6 轮(约 60 秒)查一次事件日志, 别每 10 秒都查
-Write-Log "watchdog 启动, 空闲阈值 $IdleMinutes 分钟, 目标进程 '$ProcessName', flags=0x$('{0:x}' -f $flags)"
+$waitingLogged = $false   # 「轮到用户」只在刚进入等待时记一行, 不每 10 秒刷屏
+$waitMode = if ($WaitKeepAwake) { '等待用户也保活' } else { '等待用户不保活' }
+Write-Log "watchdog 启动, 空闲阈值 $IdleMinutes 分钟, 目标进程 '$ProcessName', $waitMode, flags=0x$('{0:x}' -f $flags)"
 
 try {
     while ($true) {
+        $waiting = Get-WaitingUser
+        if (-not $waiting) { $waitingLogged = $false }
+
+        # 落到我这边说话 = 不需要为我保活。只有显式 -WaitKeepAwake 才继续走下面的正常逻辑。
+        # 立刻放锁(不走 IdleMinutes 空转); continue 前自补一次 10 秒睡眠, 否则变成忙转刷屏。
+        if ($waiting -and -not $WaitKeepAwake) {
+            if ($holding) {
+                [W32.Power]::SetThreadExecutionState($ES_CONTINUOUS) | Out-Null
+                $holding = $false
+                $displayUpgraded = $false
+                $probeCount = 0
+            }
+            if (-not $waitingLogged) {
+                Write-Log "轮到用户 -> 立刻放锁, 恢复系统休眠计划"
+                $waitingLogged = $true
+            }
+            $busy = $false
+            Start-Sleep -Seconds 10
+            continue
+        }
+
         $fileAct = Get-FileActivity
         $fileIdle = ((Get-Date) - $fileAct).TotalMinutes
-        $busy = ($fileIdle -lt $IdleMinutes) -or (Get-DshTalking)
+        $busy = ($fileIdle -lt $IdleMinutes) -or (Get-DshTalking) -or ($waiting -and $WaitKeepAwake)
 
         if ($busy) { $lastBusy = Get-Date }
 
@@ -97,7 +142,7 @@ try {
                 $holding = $true
                 $holdStarted = Get-Date
                 $probeCount = 0
-                $why = if ($fileIdle -lt $IdleMinutes) { "会话文件活跃($($fileIdle.ToString('N1'))分钟前)" } else { "正在与模型通信(公网443)" }
+                $why = if ($fileIdle -lt $IdleMinutes) { "会话文件活跃($($fileIdle.ToString('N1'))分钟前)" } elseif ($waiting -and $WaitKeepAwake) { "等待用户(已配置轮到用户也保活)" } else { "正在与模型通信(公网443)" }
                 Write-Log "DSH 忙 -> 持锁 [$why]"
             } else {
                 Write-Log "SetThreadExecutionState 失败, 错误码 $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"

@@ -7,10 +7,11 @@
 #   ... keepawake-toggle.ps1 -Action On     明确开启
 #   ... keepawake-toggle.ps1 -Action Off    明确关闭
 #   ... keepawake-toggle.ps1 -Action Status 只看状态
+#   ... keepawake-toggle.ps1 -Action Restart 在跑则重启(让新参数生效), 没跑则等同 On
 #   ... keepawake-toggle.ps1 -Quiet         不弹窗, 只打印
 
 param(
-    [ValidateSet('Toggle', 'On', 'Off', 'Status')]
+    [ValidateSet('Toggle', 'On', 'Off', 'Status', 'Restart')]
     [string]$Action = 'Toggle',
     [double]$IdleMinutes = 5,
     # 默认允许息屏: 屏幕照常按电源计划关闭, 只阻止系统睡眠/休眠。
@@ -18,15 +19,45 @@ param(
     [switch]$KeepDisplayOn,
     # 关掉自动升级: 宁可让系统睡, 也不申请屏幕常亮
     [switch]$NoAutoDisplayOn,
+    # 转给看门狗: 轮到我说话时也保持唤醒(不写 = 读配置文件, 再不行就默认不保活)
+    [switch]$WaitKeepAwake,
+    # 强制关掉「等待时也保活」, 覆盖配置文件
+    [switch]$NoWaitKeepAwake,
     [switch]$Quiet
 )
 
 $watchScript = Join-Path $PSScriptRoot 'dsh-keepawake-watch.ps1'
 $logFile     = "$env:TEMP\dsh-keepawake.log"
 $pidFile     = "$env:TEMP\dsh-keepawake.pid"
+# 和 index.js 的 dshHome()/configFile() 对齐: DSH_HOME 优先, 否则 ~/.dsh
+$dshHome     = if ($env:DSH_HOME) { $env:DSH_HOME } else { "$env:USERPROFILE\.dsh" }
+$configFile  = Join-Path $dshHome '.dsh-keepawake-config.json'
+
 # 严格匹配: 必须是「powershell -File ...dsh-keepawake-watch.ps1」
 # (不能用 Contains/-like, 否则会匹配到我们自己这条命令行里出现的同名字符串)
 $watchPattern = '-File\s+"?[^"\s]*dsh-keepawake-watch\.ps1'
+
+# 设置页写的就是这个文件; 读不出/坏了就当"不保活"(与默认一致)
+function Get-WaitPreference {
+    try {
+        if (-not (Test-Path -LiteralPath $configFile -PathType Leaf)) { return $false }
+        $raw = Get-Content -LiteralPath $configFile -Raw -Encoding UTF8 -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $false }
+        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+        return ($obj.keepAwakeWhileWaiting -eq $true)
+    } catch {
+        return $false
+    }
+}
+
+# 显式参数 > 配置文件 > 默认(false)
+if ($NoWaitKeepAwake) {
+    $effectiveWait = $false
+} elseif ($WaitKeepAwake) {
+    $effectiveWait = $true
+} else {
+    $effectiveWait = Get-WaitPreference
+}
 
 function Test-IsWatchdog([int]$procId) {
     if ($procId -le 0) { return $false }
@@ -69,6 +100,7 @@ function Start-Watchdog {
     $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$watchScript`" -IdleMinutes $IdleMinutes"
     if ($KeepDisplayOn) { $argList += ' -KeepDisplayOn' }
     if ($NoAutoDisplayOn) { $argList += ' -NoAutoDisplayOn' }
+    if ($effectiveWait) { $argList += ' -WaitKeepAwake' }
     $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -WindowStyle Hidden -PassThru
     if (-not $proc) { return "启动失败 ❌`n`n没能创建后台进程。" }
     Set-Content -Path $pidFile -Value $proc.Id -Encoding ASCII
@@ -84,7 +116,12 @@ function Start-Watchdog {
     } else {
         $extra = '，屏幕照常按你的计划关闭；若这台机器关屏就会进待机，看门狗会自动改成屏幕常亮'
     }
-    return "已开启  ✅`n`n我思考、调工具、跟模型对话的期间，电脑不会自动睡眠或休眠$extra。`n停止干活满 $IdleMinutes 分钟后自动放开，恢复你原本的睡眠计划。"
+    $waitNote = if ($effectiveWait) {
+        "`n`n轮到你说话时也继续保活（设置里已开启）。"
+    } else {
+        "`n`n轮到你说话（弹卡、审批、等你打字）时立刻放锁，电脑可以按原计划睡眠。"
+    }
+    return "已开启  ✅`n`n我思考、调工具、跟模型对话的期间，电脑不会自动睡眠或休眠$extra。`n停止干活满 $IdleMinutes 分钟后自动放开，恢复你原本的睡眠计划。$waitNote"
 }
 
 function Stop-Watchdog {
@@ -118,6 +155,10 @@ switch ($Action) {
     'On'     { Show-Msg (Start-Watchdog) }
     'Off'    { Show-Msg (Stop-Watchdog) }
     'Status' { Show-Msg (Get-StatusText) }
+    'Restart' {
+        if (@(Get-Watchdogs).Count -gt 0) { Stop-Watchdog | Out-Null }
+        Show-Msg (Start-Watchdog)
+    }
     'Toggle' {
         if (@(Get-Watchdogs).Count -gt 0) { Show-Msg (Stop-Watchdog) } else { Show-Msg (Start-Watchdog) }
     }
