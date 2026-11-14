@@ -50,26 +50,26 @@ if ($KeepDisplayOn) { $flags = $flags -bor $ES_DISPLAY_REQUIRED }
 
 ## 工作方式
 
-看门狗每 10 秒判断两个信号，任一成立就持锁：
+看门狗每 10 秒做一次判断，**唯一输入是宿主写的标记文件** `<DSH_HOME>\dsh-keepawake-waiting.json`：
 
-1. **会话文件活跃** —— DSH 的 `session.v4.jsonl.*` 在最近 `IdleMinutes` 分钟内被写过
-2. **模型连接活跃** —— 名为 `DeepSeek Harness` 的进程有指向公网 443 的 ESTABLISHED 连接
+1. **标记新鲜**（最后写入在 `-WaitingTtlSeconds` 秒内，默认 90）—— 完全采信宿主写入的 `busy` 字段：`busy=true` 持锁，`busy=false` 立刻放锁。
+2. **标记过期 / 缺失 / 读不出 / JSON 损坏** —— 直接判定「不忙」并立刻放锁，**不回退到任何旧启发式**。
 
-两个信号都消失后再空转 `IdleMinutes` 分钟才释放。这样工具调用的间隙不会误放锁。
+旧版用来判断「DSH 在干活」的两个信号 —— 会话文件 `session.v4.jsonl.*` 的 mtime、以及指向公网 443 的 ESTABLISHED 连接 —— 已**删除**。这两个信号在本机常年为真（会话文件 mtime 永远在 0.0~0.2 分钟前，443 连接常年 3~7 条），导致「空闲满 `-IdleMinutes` 分钟自动释放」这条路永远走不到，电脑根本睡不了。
 
 ```
 ① 双击快捷方式
 ② 查看门狗在不在跑
 ③ 起后台进程
 ④ 每 10 秒主循环
-⑤ 两个信号取或
+⑤ 读宿主写的 busy
 ⑥ 忙则上锁
 ⑦ Windows 内核：这期间不许睡
-⑧ 闲满 5 分钟放锁
+⑧ busy=false 或标记过期则放锁
 ⑨ 回原电源计划
 ```
 
-流程图见 [`docs/keepawake-diagram.png`](docs/keepawake-diagram.png)（源文件 `docs/keepawake-diagram.html`）。
+流程图见 [`docs/keepawake-diagram.png`](docs/keepawake-diagram.png)（源文件 `docs/keepawake-diagram.html`）。**图里画的仍是旧版的两个信号，本次未同步更新。**
 
 ## 配置项：等待我回答时是否保活
 
@@ -92,7 +92,17 @@ if ($KeepDisplayOn) { $flags = $flags -bor $ES_DISPLAY_REQUIRED }
 - **存在哪**：`%USERPROFILE%\.dsh\.dsh-keepawake-config.json`，内容形如 `{"keepAwakeWhileWaiting": true}`。这是独立文件，和界面状态缓存 `.dsh-keepawake-ui.json` 不是同一个 —— 后者会被状态刷新整文件重写
 - **改完会怎样**：写在设置页即时生效；若看门狗正在跑，插件会自动 `-Action Restart` 一次让新参数生效（主开关的开/关状态不变）
 - **命令行等价物**：`.\keepawake-toggle.ps1 -Action Restart` 会读这个配置文件决定带不带 `-WaitKeepAwake`，所以设置页改完直接 `Restart` 就生效；想临时覆盖一次，用 `-WaitKeepAwake`（强制开）或 `-NoWaitKeepAwake`（强制关）
-- **宿主半如何判断「轮到你」**：把「有未完成的提问/审批请求」或「没有 running 状态的根 agent」写进 `<DSH_HOME>\dsh-keepawake-waiting.json`（内容 `{waiting, at, pid}`），每 10 秒刷新一次；看门狗只认最后写入时间在 **90 秒**内的标记，DSH 崩了标记自然过期，不会永久放锁。拿不准的时候（宿主刚启动、还没收到任何 agent 事件）一律写 `false` —— 卡住的 `true` 会静默废掉整个开关，晚一次判定只推迟一次
+- **宿主半如何判断「轮到你」**：每 10 秒重写 `<DSH_HOME>\dsh-keepawake-waiting.json`，内容是一行 JSON：
+  ```json
+  {"version":2,"waiting":false,"busy":true,"pending":0,"running":1,"sawAgent":true,"at":"2026-11-14T00:12:33.000Z","pid":31412}
+  ```
+  - `busy`（看门狗唯一采信的字段）：**有未作答的提问/审批请求**，**或**有处于 running 的根 agent。
+  - `waiting`：「轮到你说话」—— 有未作答的提问/审批 **或** 没有 running 的根 agent。开着 `-WaitKeepAwake` 时它也算忙。
+  - `pending` / `running` / `sawAgent` / `version` 都是诊断位，看门狗不采信（`version` 只读不校验，手写的标记照样生效）。若出现 `running:0` 而 `busy:true`，说明「running 集合」与「roots() 的 status」两个视图不一致，值得单独排查。
+- **标记的新鲜度就是保活的总闸**：看门狗只认最后写入时间在 **90 秒**内的标记。
+  - **标记过期 = 不保活。** 插件没加载、插件崩了、宿主崩了、或者宿主还没重启到带 `busy` 的新版本 —— 一律静默失效，电脑该睡就睡。
+  - **这是刻意的取舍**，不是 bug：回退到旧启发式等于永不睡眠（见上文「工作方式」）。
+  - 改 `index.js` 需要**重启 DSH** 才生效；重启看门狗只重载 ps1，不会重载 index.js
 - **对应看门狗开关**：`-WaitKeepAwake`，由 `keepawake-toggle.ps1` 按配置文件自动追加，也可直接 `.\dsh-keepawake-watch.ps1 -WaitKeepAwake` 验证
 
 ## 安装
@@ -160,6 +170,7 @@ dsh plugin --profile <你的 profile> add dsh-keepawake
 .\keepawake-toggle.ps1 -Quiet
 
 # 自定义空闲阈值（分钟，支持小数）
+# 历史参数：新版本不再用它决定放锁时机，保留只为命令行兼容
 .\keepawake-toggle.ps1 -IdleMinutes 3
 
 # 直接屏幕常亮（跳过"允许息屏"的试探）
@@ -203,6 +214,8 @@ Get-WinEvent -FilterHashtable @{LogName='System'; Id=42,506,107} | Select-Object
 - **DSH 重启会断。** 看门狗是独立进程，DSH 被整棵杀掉时它一起没。
 - **关屏即待机的机器上屏幕会保持常亮。** 默认允许息屏，但若检测到持锁期间仍进了待机，会自动升级为屏幕常亮（见上文 S0 一节）。不想亮屏用 `-NoAutoDisplayOn`，代价是那台机器上保活可能失效。
 - **不跨用户会话。** 锁是线程级的，用户注销就没了。
+- **标记文件过期即不保活。** 插件没加载 / 插件崩了 / 宿主崩溃 / 宿主还没重启到新版本时，看门狗读不到新鲜的 `busy`，会一律判定不忙并放锁 —— 保活静默失效，但电脑能正常睡眠。这是刻意取舍，不回退旧的「会话文件 + 443 连接」启发式（那两个信号在本机恒真，回退等于永不睡）。
+- **`index.js` 的改动要重启 DSH 才生效。** 重启看门狗只重载 ps1；宿主半的新代码要等 DSH 进程重启后才加载。
 
 ## 文件
 
@@ -223,7 +236,7 @@ docs/keepawake-diagram.*        流程图
 
 ```
 %USERPROFILE%\.dsh\.dsh-keepawake-config.json  配置项(独立文件, 程序生成)
-%USERPROFILE%\.dsh\dsh-keepawake-waiting.json   「轮到用户」标记(宿主每 10 秒刷新)
+%USERPROFILE%\.dsh\dsh-keepawake-waiting.json   「轮到用户」标记(宿主每 10 秒刷新, 含 busy / version)
 ```
 
 ## License

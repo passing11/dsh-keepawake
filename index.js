@@ -29,6 +29,12 @@ const CONFIG_NAME = '.dsh-keepawake-config.json'
 const WAITING_NAME = 'dsh-keepawake-waiting.json'
 /** How often the host republishes the "waiting for the user" flag. */
 const WAITING_TICK_MS = 10000
+/**
+ * Generation tag of the marker payload. Bumped whenever the fields change so a
+ * stale writer is identifiable from the file alone. The watchdog never gates on
+ * it — a hand-written marker must still be honoured.
+ */
+const WAITING_VERSION = 2
 
 /** DSH home, matching the host's own convention. */
 function dshHome() {
@@ -82,14 +88,33 @@ function writeConfig(next) {
 }
 
 /**
- * Publish the waiting flag for the watchdog (best effort).
- * @param {boolean} waiting - true while the turn is back with the user.
+ * Publish the host's own opinion about the lock for the watchdog (best effort).
+ *
+ * `busy` is the authoritative signal: the host alone can see the pending
+ * question/approval counters and the agent's turn phase. The watchdog reads
+ * this file, trusts `busy` while the file is fresh, and stops holding the lock
+ * when the file goes stale — so nothing here may throw.
+ *
+ * `pending`, `running` and `sawAgent` are diagnostics: `running` is the size of
+ * the event-driven set while `busy` used `runningCount()`, so "running:0 but
+ * busy:true" means the two views disagree and is worth investigating.
+ * @param {{waiting: boolean, busy: boolean, pending: number, running: number, sawAgent: boolean}} state - snapshot.
  */
-function writeWaiting(waiting) {
+function writeWaiting(state) {
   try {
     const file = waitingFile()
     fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, JSON.stringify({ waiting: waiting === true, at: new Date().toISOString(), pid: process.pid }), 'utf8')
+    const payload = {
+      version: WAITING_VERSION,
+      waiting: state && state.waiting === true,
+      busy: state && state.busy === true,
+      pending: state && Number.isFinite(state.pending) ? state.pending : 0,
+      running: state && Number.isFinite(state.running) ? state.running : 0,
+      sawAgent: state && state.sawAgent === true,
+      at: new Date().toISOString(),
+      pid: process.pid,
+    }
+    fs.writeFileSync(file, JSON.stringify(payload), 'utf8')
   } catch {
     /* a read-only home must not break the turn */
   }
@@ -273,9 +298,12 @@ function readLogInfo() {
       info.reasonAt = locked[1]
       continue
     }
-    // Two releases count: the idle timer, and the immediate one when the turn
-    // comes back to the user ("轮到用户 -> 立刻放锁").
-    const released = line.match(/^(\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(?:空闲 .*释放锁|轮到用户.*(?:放锁|释放锁))/)
+    // Two releases count: the idle timer (historically), the immediate one when
+    // the turn comes back to the user ("轮到用户 -> 立刻放锁"), and the stale
+    // marker path ("标记文件过期… -> 放锁") where the plugin stopped vouching.
+    const released = line.match(
+      /^(\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(?:空闲 .*释放锁|轮到用户.*(?:放锁|释放锁)|标记文件.*放锁|宿主报告空闲.*放锁)/,
+    )
     if (released) info.releasedAt = released[1]
   }
   return info
@@ -514,7 +542,15 @@ function createWaitingTracker(ctx) {
 
   const publish = () => {
     if (disposed) return
-    writeWaiting(pending > 0 || runningCount() === 0)
+    // One snapshot, one write: the two flags must never disagree about which
+    // tick they came from.
+    const pendingNow = pending
+    const runningNow = runningCount()
+    // `waiting` keeps its original meaning (the turn is back with the user) and
+    // its original expression; `busy` is what the watchdog actually obeys.
+    const waiting = pendingNow > 0 || runningNow === 0
+    const busy = pendingNow > 0 || runningNow > 0
+    writeWaiting({ waiting, busy, pending: pendingNow, running: running.size, sawAgent: sawAgentEvent })
   }
 
   // Waterfall: +1 on entry, -1 once next() settles, always returning its value.
@@ -583,8 +619,20 @@ function createWaitingTracker(ctx) {
   // `{ global: true }` is what makes these reachable from this plugin's scope:
   // the host dispatches them through the agent's carrier, and without the flag
   // cordis filters every listener whose fiber is not that agent's.
-  listen('user-questions/request', guard, { global: true })
-  listen('approval/request', guard, { global: true })
+  //
+  // `prepend: true` is equally load-bearing on the two waterfalls below. Cordis
+  // registers `push` by default and runs listeners OUTERMOST-FIRST, so a later
+  // listener only runs if every earlier one calls `next()`. The host registers
+  // its own remote-event forwarder when it boots (earlier than any plugin) and
+  // that forwarder returns the browser's answer without calling `next()` — so
+  // an appended guard is never entered and `pending` stays 0 forever. Prepending
+  // puts the guard outside the forwarder: it always runs, and the forwarder
+  // still gets the request via `next()`.
+  //
+  // Must stay an object literal: cordis' `on()` rewrites a boolean shorthand to
+  // `{ prepend }`, which would silently drop `global`.
+  listen('user-questions/request', guard, { global: true, prepend: true })
+  listen('approval/request', guard, { global: true, prepend: true })
   listen('agent/status', onStatus, { global: true })
   listen('agent/created', onCreated, { global: true })
   listen('agent/disposed', onDisposed, { global: true })
@@ -603,7 +651,7 @@ function createWaitingTracker(ctx) {
           /* already detached */
         }
       }
-      writeWaiting(false)
+      writeWaiting({ waiting: false, busy: false, pending: 0, running: 0, sawAgent: false })
     },
     attach(agents) {
       agentsService = agents && typeof agents.roots === 'function' ? agents : null
